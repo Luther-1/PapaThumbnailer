@@ -73,6 +73,10 @@ private:
 
     long _cRef;
     IStream *_pStream;     // provided during initialization.
+    VOID DxtDecodeColourMap(BYTE*, UINT, BYTE[4][3]);
+    VOID DxtDecodeAlphaMap(BYTE*, UINT, BYTE[16]);
+    VOID DecodeTexture(BYTE*, USHORT, USHORT, BYTE, BYTE*);
+
 };
 
 HRESULT CPapaThumbProvider_CreateInstance(REFIID riid, void **ppv)
@@ -99,7 +103,7 @@ IFACEMETHODIMP CPapaThumbProvider::Initialize(IStream *pStream, DWORD)
     return hr;
 }
 
-void dxtDecodeColourMap(BYTE* data, UINT dataLoc, BYTE colours[4][3]) { // [[R,G,B] * 4]
+VOID CPapaThumbProvider::DxtDecodeColourMap(BYTE* data, UINT dataLoc, BYTE colours[4][3]) { // [[R,G,B] * 4]
     UINT colour0 = (data[dataLoc + 0]) | (data[dataLoc + 1] << 8);
     UINT colour1 = (data[dataLoc + 2]) | (data[dataLoc + 3] << 8);
 
@@ -132,7 +136,7 @@ void dxtDecodeColourMap(BYTE* data, UINT dataLoc, BYTE colours[4][3]) { // [[R,G
     }
 }
 
-void dxtDecodeAlphaMap(BYTE* data, int dataLoc, BYTE alphaValues[16]) {
+VOID CPapaThumbProvider::DxtDecodeAlphaMap(BYTE* data, UINT dataLoc, BYTE alphaValues[16]) {
     BYTE alphaMap[8];
     alphaMap[0] = data[dataLoc + 0];
     alphaMap[1] = data[dataLoc + 1];
@@ -162,7 +166,7 @@ void dxtDecodeAlphaMap(BYTE* data, int dataLoc, BYTE alphaValues[16]) {
     }
 }
 
-void decodeTexture(BYTE* data, USHORT width, USHORT height, BYTE format, BYTE* dst) {
+VOID CPapaThumbProvider::DecodeTexture(BYTE* data, USHORT width, USHORT height, BYTE format, BYTE* dst) {
 
     int heightZero = height - 1;
 
@@ -208,7 +212,7 @@ void decodeTexture(BYTE* data, USHORT width, USHORT height, BYTE format, BYTE* d
         for (UINT y = 0; y < height; y += 4) {
             for (UINT x = 0; x < width; x += 4) {
 
-                dxtDecodeColourMap(data, bufferLoc, colours);
+                DxtDecodeColourMap(data, bufferLoc, colours);
                 bufferLoc += 4;
 
                 UINT bits = 0;
@@ -241,10 +245,10 @@ void decodeTexture(BYTE* data, USHORT width, USHORT height, BYTE format, BYTE* d
         for (UINT y = 0; y < height; y += 4) {
             for (UINT x = 0; x < width; x += 4) {
 
-                dxtDecodeAlphaMap(data, bufferLoc, alphaValues);
+                DxtDecodeAlphaMap(data, bufferLoc, alphaValues);
                 bufferLoc += 8;
 
-                dxtDecodeColourMap(data, bufferLoc, colours);
+                DxtDecodeColourMap(data, bufferLoc, colours);
                 bufferLoc += 4;
 
                 UINT bits = 0;
@@ -295,6 +299,7 @@ void decodeTexture(BYTE* data, USHORT width, USHORT height, BYTE format, BYTE* d
     }
 }
 
+// HRESULT CPapaThumbProvider::RescaleImage()
 
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
@@ -385,7 +390,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
 
     BYTE* pBits;
     HBITMAP hbmp = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
-    decodeTexture(data, width, height, format, pBits);
+    DecodeTexture(data, width, height, format, pBits);
 
     *phbmp = hbmp;
     *pdwAlpha = WTSAT_ARGB;
