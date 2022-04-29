@@ -76,6 +76,9 @@ private:
     VOID DxtDecodeColourMap(BYTE*, UINT, BYTE[4][3]);
     VOID DxtDecodeAlphaMap(BYTE*, UINT, BYTE[16]);
     VOID DecodeTexture(BYTE*, USHORT, USHORT, BYTE, BYTE*);
+    HRESULT RescaleImageBilinear(HBITMAP*, HBITMAP*);
+    FLOAT Lerp(FLOAT s, FLOAT e, FLOAT t);
+    FLOAT Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty);
 
 };
 
@@ -299,7 +302,57 @@ VOID CPapaThumbProvider::DecodeTexture(BYTE* data, USHORT width, USHORT height, 
     }
 }
 
-// HRESULT CPapaThumbProvider::RescaleImage()
+// source:
+// https://rosettacode.org/wiki/Bilinear_interpolation#C
+
+FLOAT CPapaThumbProvider::Lerp(FLOAT s, FLOAT e, FLOAT t) {
+    return s + (e - s) * t;
+}
+
+FLOAT CPapaThumbProvider::Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty) {
+    return Lerp(Lerp(c00, c10, tx), Lerp(c01, c11, tx), ty);
+}
+
+HRESULT CPapaThumbProvider::RescaleImageBilinear(HBITMAP* src, HBITMAP* dst) {
+
+    DIBSECTION srcDib;
+    GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
+    BYTE* srcPixels = (BYTE*)srcDib.dsBm.bmBits;
+    LONG srcWidth = srcDib.dsBmih.biWidth;
+    LONG srcHeight = srcDib.dsBmih.biHeight;
+
+    DIBSECTION dstDib;
+    GetObject(*dst, sizeof(dstDib), (LPVOID)&dstDib);
+    BYTE* dstPixels = (BYTE*)dstDib.dsBm.bmBits;
+    LONG dstWidth = dstDib.dsBmih.biWidth;
+    LONG dstHeight = dstDib.dsBmih.biHeight;
+
+    ULONG32* srcPixelsInt = (ULONG32*)srcPixels;
+    ULONG32* dstPixelsInt = (ULONG32*)dstPixels;
+
+
+    for (LONG y = 0; y < dstHeight; y++) {
+        for (LONG x = 0; x < dstWidth; x++) {
+            FLOAT gx = x / (FLOAT)(dstWidth) * (srcWidth - 0.5f);
+            FLOAT gy = y / (FLOAT)(dstHeight) * (srcHeight - 0.5f);
+            LONG gxi = (LONG)gx;
+            LONG gyi = (LONG)gy;
+
+            ULONG32 result = 0;
+            ULONG32 c00 = srcPixelsInt[gxi + gyi * srcWidth];
+            ULONG32 c10 = srcPixelsInt[gxi + 1 + gyi * srcWidth];
+            ULONG32 c01 = srcPixelsInt[gxi + (gyi + 1) * srcWidth];
+            ULONG32 c11 = srcPixelsInt[gxi + 1 + (gyi + 1) * srcWidth];
+            for (LONG i = 0; i < 4; i++) {
+                result |= (UCHAR)Blerp(   (FLOAT)((c00 >> (8 * i)) & 0xFF), (FLOAT)((c10 >> (8 * i)) & 0xFF), 
+                                            (FLOAT)((c01 >> (8 * i)) & 0xFF), (FLOAT)((c11 >> (8 * i)) & 0xFF), 
+                                            (FLOAT)(gx - gxi), (FLOAT)(gy - gyi)) << (8 * i);
+            }
+            dstPixelsInt[x + y * dstWidth] = result;
+        }
+    }
+    return S_OK;
+}
 
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
@@ -367,7 +420,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
         return E_INVALIDARG;
     }
 
-    BYTE* data = (BYTE*)malloc(dataSize);
+    BYTE* data = (BYTE*)malloc((size_t)dataSize);
     if (data == NULL) {
         return E_OUTOFMEMORY;
     }
@@ -381,30 +434,45 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     }
 
     
-    BITMAPINFO bmi = { sizeof(bmi.bmiHeader) };
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
+    BITMAPINFO decompData = { sizeof(decompData.bmiHeader) };
+    decompData.bmiHeader.biWidth = width;
+    decompData.bmiHeader.biHeight = height;
+    decompData.bmiHeader.biPlanes = 1;
+    decompData.bmiHeader.biBitCount = 32;
+    decompData.bmiHeader.biCompression = BI_RGB;
 
-    BYTE* pBits;
-    HBITMAP hbmp = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
-    DecodeTexture(data, width, height, format, pBits);
-
-    *phbmp = hbmp;
-    *pdwAlpha = WTSAT_ARGB;
+    BYTE* decompTexture;
+    HBITMAP decompBitmap = CreateDIBSection(NULL, &decompData, DIB_RGB_COLORS, reinterpret_cast<void**>(&decompTexture), NULL, 0);
+    DecodeTexture(data, width, height, format, decompTexture);
 
     // swap R and B
     for (UINT y = 0; y < height; y++) {
         for (UINT x = 0; x < width; x++) {
             UINT idx = (x + y * width) * 4;
-            BYTE t = pBits[idx];
-            pBits[idx] = pBits[idx + 2];
-            pBits[idx + 2] = t;
+            BYTE t = decompTexture[idx];
+            decompTexture[idx] = decompTexture[idx + 2];
+            decompTexture[idx + 2] = t;
         }
     }
 
+    // scale to desired size
+    USHORT smaller = min(width, height);
+    FLOAT factor = (FLOAT)cx / (FLOAT)smaller;
+
+    BITMAPINFO bmi = { sizeof(bmi.bmiHeader) };
+    bmi.bmiHeader.biWidth = (LONG)roundf(width * factor);
+    bmi.bmiHeader.biHeight = (LONG)roundf(height * factor);
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    BYTE* pBits;
+    HBITMAP scaledBitmap = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
+
+    RescaleImageBilinear(&decompBitmap, &scaledBitmap);
+
+    *phbmp = scaledBitmap;
+    *pdwAlpha = WTSAT_ARGB;
 
     free(data);
     return S_OK;
