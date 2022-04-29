@@ -11,6 +11,8 @@
 #include <wincodec.h>   // Windows Imaging Codecs
 #include <msxml6.h>
 #include <new>
+#include <Windows.h>
+#include "ImgPapafile.c"
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -80,6 +82,8 @@ private:
     FLOAT Lerp(FLOAT s, FLOAT e, FLOAT t);
     FLOAT Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty);
     VOID Blit(HBITMAP*, HBITMAP*, LONG, LONG);
+    VOID SwapBR(HBITMAP*);
+    VOID SwapTopBottom(HBITMAP*);
 
 };
 
@@ -120,18 +124,18 @@ VOID CPapaThumbProvider::DxtDecodeColourMap(BYTE* data, UINT dataLoc, BYTE colou
     colours[1][2] = (colour1 << 3) & 0b11111000;
 
     if (colour0 > colour1) {
-        colours[2][0] = (BYTE)((2 * (UINT)colours[0][0] + (UINT)colours[1][0]) / 3.0);
-        colours[2][1] = (BYTE)((2 * (UINT)colours[0][1] + colours[1][1]) / 3.0);
-        colours[2][2] = (BYTE)((2 * (UINT)colours[0][2] + colours[1][2]) / 3.0);
+        colours[2][0] = (BYTE)((2 * (ULONG64)colours[0][0] + (ULONG64)colours[1][0]) / 3.0);
+        colours[2][1] = (BYTE)((2 * (ULONG64)colours[0][1] + (ULONG64)colours[1][1]) / 3.0);
+        colours[2][2] = (BYTE)((2 * (ULONG64)colours[0][2] + (ULONG64)colours[1][2]) / 3.0);
 
-        colours[3][0] = (BYTE)(((UINT)colours[0][0] + 2 * colours[1][0]) / 3.0);
-        colours[3][1] = (BYTE)(((UINT)colours[0][1] + 2 * colours[1][1]) / 3.0);
-        colours[3][2] = (BYTE)(((UINT)colours[0][2] + 2 * colours[1][2]) / 3.0);
+        colours[3][0] = (BYTE)(((ULONG64)colours[0][0] + 2 * (ULONG64)colours[1][0]) / 3.0);
+        colours[3][1] = (BYTE)(((ULONG64)colours[0][1] + 2 * (ULONG64)colours[1][1]) / 3.0);
+        colours[3][2] = (BYTE)(((ULONG64)colours[0][2] + 2 * (ULONG64)colours[1][2]) / 3.0);
     }
     else {
-        colours[2][0] = (BYTE)(((UINT)colours[0][0] + colours[1][0]) / 2.0);
-        colours[2][1] = (BYTE)(((UINT)colours[0][1] + colours[1][1]) / 2.0);
-        colours[2][2] = (BYTE)(((UINT)colours[0][2] + colours[1][2]) / 2.0);
+        colours[2][0] = (BYTE)(((ULONG64)colours[0][0] + (ULONG64)colours[1][0]) / 2.0);
+        colours[2][1] = (BYTE)(((ULONG64)colours[0][1] + (ULONG64)colours[1][1]) / 2.0);
+        colours[2][2] = (BYTE)(((ULONG64)colours[0][2] + (ULONG64)colours[1][2]) / 2.0);
 
         colours[3][0] = 0;
         colours[3][1] = 0;
@@ -147,12 +151,12 @@ VOID CPapaThumbProvider::DxtDecodeAlphaMap(BYTE* data, UINT dataLoc, BYTE alphaV
 
     if (alphaMap[0] > alphaMap[1]) {
         for (UINT i = 1; i < 7; i++) {
-            alphaMap[i + 1] = (BYTE)(((ULONG)(7 - i) * (ULONG)alphaMap[0] + (ULONG)i * (ULONG)alphaMap[1]) / 7.0);
+            alphaMap[i + 1] = (BYTE)(((ULONG64)(7 - i) * (ULONG64)alphaMap[0] + (ULONG64)i * (ULONG64)alphaMap[1]) / 7.0);
         }
     }
     else {
         for (UINT i = 1; i < 5; i++) {
-            alphaMap[i + 1] = (BYTE)(((5 - i) * (UINT)alphaMap[0] + i * (UINT)alphaMap[1]) / 5.0);
+            alphaMap[i + 1] = (BYTE)(((5 - i) * (ULONG64)alphaMap[0] + i * (ULONG64)alphaMap[1]) / 5.0);
         }
         alphaMap[6] = 0;
         alphaMap[7] = (BYTE)0xff;
@@ -355,7 +359,7 @@ HRESULT CPapaThumbProvider::RescaleImageBilinear(HBITMAP* src, HBITMAP* dst) {
     return S_OK;
 }
 
-VOID Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
+VOID CPapaThumbProvider::Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
     DIBSECTION srcDib;
     GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
     BYTE* srcPixels = (BYTE*)srcDib.dsBm.bmBits;
@@ -368,8 +372,6 @@ VOID Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
     LONG dstWidth = dstDib.dsBmih.biWidth;
     LONG dstHeight = dstDib.dsBmih.biHeight;
 
-    ULONG32* dstPixelsInt = (ULONG32*)dstPixels;
-
     // clamp the input to always be valid
     dx = min(max(dx, 0), dstWidth - srcWidth);
     dy = min(max(dy, 0), dstHeight - srcHeight);
@@ -378,28 +380,67 @@ VOID Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
         for (LONG x = dx; x < dx + srcWidth; x++) {
             LONG sx = x - dx;
             LONG sy = y - dy;
-            FLOAT srcAlpha = (FLOAT)(srcPixels[(sx + sy * srcWidth) * 4 + 3] & 0xFF) / 255.0f;
-            FLOAT dstAlpha = (FLOAT)(dstPixels[(x + y * dstWidth) * 4 + 3] & 0xFF) / 255.0f;
+            FLOAT srcAlpha = (FLOAT)(srcPixels[(sx + sy * srcWidth) * 4 + 3]) / 255.0f;
+            FLOAT dstAlpha = (FLOAT)(dstPixels[(x + y * dstWidth) * 4 + 3]) / 255.0f;
 
             BYTE sred = srcPixels[(sx + sy * srcWidth) * 4];
             BYTE sgreen = srcPixels[(sx + sy * srcWidth) * 4 + 1];
             BYTE sblue = srcPixels[(sx + sy * srcWidth) * 4 + 2];
 
-            BYTE dred = srcPixels[(x + y * dstWidth) * 4];
-            BYTE dgreen = srcPixels[(x + y * dstWidth) * 4 + 1];
-            BYTE dblue = srcPixels[(x + y * dstWidth) * 4 + 2];
+            BYTE dred = dstPixels[(x + y * dstWidth) * 4];
+            BYTE dgreen = dstPixels[(x + y * dstWidth) * 4 + 1];
+            BYTE dblue = dstPixels[(x + y * dstWidth) * 4 + 2];
 
-            BYTE red = (BYTE)(sred * srcAlpha + dred * (1 - srcAlpha));
-            BYTE green = (BYTE)(sgreen * srcAlpha + dgreen * (1 - srcAlpha));
-            BYTE blue = (BYTE)(sblue * srcAlpha + dblue * (1 - srcAlpha));
+            BYTE red = (BYTE)(sred * srcAlpha + dred * (1.0f - srcAlpha));
+            BYTE green = (BYTE)(sgreen * srcAlpha + dgreen * (1.0f - srcAlpha));
+            BYTE blue = (BYTE)(sblue * srcAlpha + dblue * (1.0f - srcAlpha));
 
-            BYTE alpha = (BYTE) (srcAlpha + (dstAlpha * (1 - srcAlpha)));
+            BYTE alpha = (BYTE) ((srcAlpha + (dstAlpha * (1.0f - srcAlpha))) * 255.0f);
 
-            ULONG32 result = red << 24 | green << 16 | blue << 8 | alpha << 0;
-            dstPixelsInt[x + y * dstWidth] = result;
+            dstPixels[(x + y * dstWidth) * 4] = red;
+            dstPixels[(x + y * dstWidth) * 4 + 1] = green;
+            dstPixels[(x + y * dstWidth) * 4 + 2] = blue;
+            dstPixels[(x + y * dstWidth) * 4 + 3] = alpha;
+        }
+    }   
+}
+
+VOID CPapaThumbProvider::SwapBR(HBITMAP* src) {
+    DIBSECTION dib;
+    GetObject(*src, sizeof(dib), (LPVOID)&dib);
+    BYTE* pixels = (BYTE*)dib.dsBm.bmBits;
+    LONG width = dib.dsBmih.biWidth;
+    LONG height = dib.dsBmih.biHeight;
+
+    // swap R and B
+    for (LONG y = 0; y < height; y++) {
+        for (LONG x = 0; x < width; x++) {
+            LONG idx = (x + y * width) * 4;
+            BYTE t = pixels[idx];
+            pixels[idx] = pixels[idx + 2];
+            pixels[idx + 2] = t;
         }
     }
-    
+}
+
+void CPapaThumbProvider::SwapTopBottom(HBITMAP* src) {
+    DIBSECTION dib;
+    GetObject(*src, sizeof(dib), (LPVOID)&dib);
+    BYTE* pixels = (BYTE*)dib.dsBm.bmBits;
+    LONG width = dib.dsBmih.biWidth;
+    LONG height = dib.dsBmih.biHeight;
+
+    ULONG32* pixelsInt = (ULONG32*)pixels;
+
+    for (LONG y = 0; y < height / 2; y++) {
+        for (LONG x = 0; x < width; x++) {
+            LONG idx = (x + y * width);
+            LONG idx2 = (x + (height - y - 1) * width);
+            ULONG32 t = pixelsInt[idx];
+            pixelsInt[idx] = pixelsInt[idx2];
+            pixelsInt[idx2] = t;
+        }
+    }
 }
 
 // IThumbnailProvider
@@ -495,14 +536,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     DecodeTexture(data, width, height, format, decompTexture);
 
     // swap R and B
-    for (UINT y = 0; y < height; y++) {
-        for (UINT x = 0; x < width; x++) {
-            UINT idx = (x + y * width) * 4;
-            BYTE t = decompTexture[idx];
-            decompTexture[idx] = decompTexture[idx + 2];
-            decompTexture[idx + 2] = t;
-        }
-    }
+    SwapBR(&decompBitmap);
 
     // scale to desired size
     USHORT smaller = min(width, height);
@@ -521,7 +555,24 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     RescaleImageBilinear(&decompBitmap, &scaledBitmap);
     DeleteObject(decompBitmap); // free the old bitmap
 
-    // HBITMAP hBMP = (HBITMAP)LoadImage(NULL, (LPCWSTR)"IMG_PAPAFILE", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
+
+    // load the papafile file image
+    BITMAPINFO papafile = { sizeof(papafile.bmiHeader) };
+    papafile.bmiHeader.biWidth = img_papafile.width;
+    papafile.bmiHeader.biHeight = img_papafile.height;
+    papafile.bmiHeader.biPlanes = 1;
+    papafile.bmiHeader.biBitCount = (WORD)(img_papafile.bytes_per_pixel * 8);
+    papafile.bmiHeader.biCompression = BI_RGB;
+    BYTE* papafileBits;
+    HBITMAP papafileBitmap = CreateDIBSection(NULL, &papafile, DIB_RGB_COLORS, reinterpret_cast<void**>(&papafileBits), NULL, 0);
+
+    memcpy(papafileBits, img_papafile.pixel_data, (ULONG64)img_papafile.width * (ULONG64)img_papafile.height * (ULONG64)img_papafile.bytes_per_pixel);
+    SwapBR(&papafileBitmap);
+    SwapTopBottom(&papafileBitmap);
+
+    const UINT offset = 1;
+    
+    Blit(&papafileBitmap, &scaledBitmap, bmi.bmiHeader.biWidth - papafile.bmiHeader.biWidth - offset, offset);
 
     *phbmp = scaledBitmap;
     *pdwAlpha = WTSAT_ARGB;
