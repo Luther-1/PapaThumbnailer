@@ -79,6 +79,7 @@ private:
     HRESULT RescaleImageBilinear(HBITMAP*, HBITMAP*);
     FLOAT Lerp(FLOAT s, FLOAT e, FLOAT t);
     FLOAT Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty);
+    VOID Blit(HBITMAP*, HBITMAP*, LONG, LONG);
 
 };
 
@@ -354,6 +355,53 @@ HRESULT CPapaThumbProvider::RescaleImageBilinear(HBITMAP* src, HBITMAP* dst) {
     return S_OK;
 }
 
+VOID Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
+    DIBSECTION srcDib;
+    GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
+    BYTE* srcPixels = (BYTE*)srcDib.dsBm.bmBits;
+    LONG srcWidth = srcDib.dsBmih.biWidth;
+    LONG srcHeight = srcDib.dsBmih.biHeight;
+
+    DIBSECTION dstDib;
+    GetObject(*dst, sizeof(dstDib), (LPVOID)&dstDib);
+    BYTE* dstPixels = (BYTE*)dstDib.dsBm.bmBits;
+    LONG dstWidth = dstDib.dsBmih.biWidth;
+    LONG dstHeight = dstDib.dsBmih.biHeight;
+
+    ULONG32* dstPixelsInt = (ULONG32*)dstPixels;
+
+    // clamp the input to always be valid
+    dx = min(max(dx, 0), dstWidth - srcWidth);
+    dy = min(max(dy, 0), dstHeight - srcHeight);
+    
+    for (LONG y = dy; y < dy + srcHeight; y++) {
+        for (LONG x = dx; x < dx + srcWidth; x++) {
+            LONG sx = x - dx;
+            LONG sy = y - dy;
+            FLOAT srcAlpha = (FLOAT)(srcPixels[(sx + sy * srcWidth) * 4 + 3] & 0xFF) / 255.0f;
+            FLOAT dstAlpha = (FLOAT)(dstPixels[(x + y * dstWidth) * 4 + 3] & 0xFF) / 255.0f;
+
+            BYTE sred = srcPixels[(sx + sy * srcWidth) * 4];
+            BYTE sgreen = srcPixels[(sx + sy * srcWidth) * 4 + 1];
+            BYTE sblue = srcPixels[(sx + sy * srcWidth) * 4 + 2];
+
+            BYTE dred = srcPixels[(x + y * dstWidth) * 4];
+            BYTE dgreen = srcPixels[(x + y * dstWidth) * 4 + 1];
+            BYTE dblue = srcPixels[(x + y * dstWidth) * 4 + 2];
+
+            BYTE red = (BYTE)(sred * srcAlpha + dred * (1 - srcAlpha));
+            BYTE green = (BYTE)(sgreen * srcAlpha + dgreen * (1 - srcAlpha));
+            BYTE blue = (BYTE)(sblue * srcAlpha + dblue * (1 - srcAlpha));
+
+            BYTE alpha = (BYTE) (srcAlpha + (dstAlpha * (1 - srcAlpha)));
+
+            ULONG32 result = red << 24 | green << 16 | blue << 8 | alpha << 0;
+            dstPixelsInt[x + y * dstWidth] = result;
+        }
+    }
+    
+}
+
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
 {
@@ -433,6 +481,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
         return E_INVALIDARG;
     }
 
+    // BGRA
     
     BITMAPINFO decompData = { sizeof(decompData.bmiHeader) };
     decompData.bmiHeader.biWidth = width;
@@ -470,6 +519,9 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     HBITMAP scaledBitmap = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
 
     RescaleImageBilinear(&decompBitmap, &scaledBitmap);
+    DeleteObject(decompBitmap); // free the old bitmap
+
+    // HBITMAP hBMP = (HBITMAP)LoadImage(NULL, (LPCWSTR)"IMG_PAPAFILE", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 
     *phbmp = scaledBitmap;
     *pdwAlpha = WTSAT_ARGB;
