@@ -79,6 +79,7 @@ private:
     VOID DxtDecodeAlphaMap(BYTE*, UINT, BYTE[16]);
     VOID DecodeTexture(BYTE*, USHORT, USHORT, BYTE, BYTE*);
     HRESULT RescaleImageBilinear(HBITMAP*, HBITMAP*);
+    HRESULT RescaleImageNearestNeighbour(HBITMAP*, HBITMAP*);
     FLOAT Lerp(FLOAT s, FLOAT e, FLOAT t);
     FLOAT Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty);
     VOID Blit(HBITMAP*, HBITMAP*, LONG, LONG);
@@ -443,6 +444,37 @@ void CPapaThumbProvider::SwapTopBottom(HBITMAP* src) {
     }
 }
 
+HRESULT CPapaThumbProvider::RescaleImageNearestNeighbour(HBITMAP* src, HBITMAP* dst) {
+
+    DIBSECTION srcDib;
+    GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
+    BYTE* srcPixels = (BYTE*)srcDib.dsBm.bmBits;
+    LONG srcWidth = srcDib.dsBmih.biWidth;
+    LONG srcHeight = srcDib.dsBmih.biHeight;
+
+    DIBSECTION dstDib;
+    GetObject(*dst, sizeof(dstDib), (LPVOID)&dstDib);
+    BYTE* dstPixels = (BYTE*)dstDib.dsBm.bmBits;
+    LONG dstWidth = dstDib.dsBmih.biWidth;
+    LONG dstHeight = dstDib.dsBmih.biHeight;
+
+    ULONG32* srcPixelsInt = (ULONG32*)srcPixels;
+    ULONG32* dstPixelsInt = (ULONG32*)dstPixels;
+
+
+    for (LONG y = 0; y < dstHeight; y++) {
+        for (LONG x = 0; x < dstWidth; x++) {
+            FLOAT gx = x / (FLOAT)(dstWidth) * (FLOAT) (srcWidth);
+            FLOAT gy = y / (FLOAT)(dstHeight) * (FLOAT) (srcHeight);
+            LONG gxi = (LONG)gx;
+            LONG gyi = (LONG)gy;
+
+            dstPixelsInt[x + y * dstWidth] = srcPixelsInt[gxi + gyi * srcWidth];
+        }
+    }
+    return S_OK;
+}
+
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
 {
@@ -570,9 +602,21 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     SwapBR(&papafileBitmap);
     SwapTopBottom(&papafileBitmap);
 
+    // upscale by 4x
+    BITMAPINFO papafile4 = { sizeof(papafile4.bmiHeader) };
+    papafile4.bmiHeader.biWidth = img_papafile.width * 4;
+    papafile4.bmiHeader.biHeight = img_papafile.height * 4;
+    papafile4.bmiHeader.biPlanes = 1;
+    papafile4.bmiHeader.biBitCount = (WORD)(img_papafile.bytes_per_pixel * 8);
+    papafile4.bmiHeader.biCompression = BI_RGB;
+    BYTE* papafileBits4;
+    HBITMAP papafileBitmap4 = CreateDIBSection(NULL, &papafile4, DIB_RGB_COLORS, reinterpret_cast<void**>(&papafileBits4), NULL, 0);
+
+    RescaleImageNearestNeighbour(&papafileBitmap, &papafileBitmap4);
+
     const UINT offset = 1;
     
-    Blit(&papafileBitmap, &scaledBitmap, bmi.bmiHeader.biWidth - papafile.bmiHeader.biWidth - offset, offset);
+    Blit(&papafileBitmap4, &scaledBitmap, bmi.bmiHeader.biWidth - papafile.bmiHeader.biWidth - offset, offset);
 
     *phbmp = scaledBitmap;
     *pdwAlpha = WTSAT_ARGB;
