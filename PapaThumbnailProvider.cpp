@@ -374,11 +374,14 @@ VOID CPapaThumbProvider::Blit(HBITMAP* src, HBITMAP* dst, LONG dx, LONG dy) {
     LONG dstHeight = dstDib.dsBmih.biHeight;
 
     // clamp the input to always be valid
-    dx = min(max(dx, 0), dstWidth - srcWidth);
-    dy = min(max(dy, 0), dstHeight - srcHeight);
+    dx = max(min(dx, dstWidth - srcWidth), 0);
+    dy = max(min(dy, dstHeight - srcHeight), 0);
+
+    LONG maxX = min(dx + srcWidth, dstWidth);
+    LONG maxY = min(dy + srcHeight, dstHeight);
     
-    for (LONG y = dy; y < dy + srcHeight; y++) {
-        for (LONG x = dx; x < dx + srcWidth; x++) {
+    for (LONG y = dy; y < maxY; y++) {
+        for (LONG x = dx; x < maxX; x++) {
             LONG sx = x - dx;
             LONG sy = y - dy;
             FLOAT srcAlpha = (FLOAT)(srcPixels[(sx + sy * srcWidth) * 4 + 3]) / 255.0f;
@@ -616,7 +619,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
 
     const UINT offset = 1;
     
-    Blit(&papafileBitmap4, &scaledBitmap, bmi.bmiHeader.biWidth - papafile.bmiHeader.biWidth - offset, offset);
+    Blit(&papafileBitmap4, &scaledBitmap, bmi.bmiHeader.biWidth - papafile4.bmiHeader.biWidth - offset, offset);
 
     *phbmp = scaledBitmap;
     *pdwAlpha = WTSAT_ARGB;
