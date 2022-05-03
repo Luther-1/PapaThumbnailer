@@ -755,8 +755,8 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     SwapBR(&papafileBitmap);
     SwapTopBottom(&papafileBitmap);
 
-    // scale so that the icon image is 1/4 of the larger component, clamped to fit if it exceeds bounds
-    FLOAT fraction = 4.0f;
+    // scale so that the icon image is a fraction of the larger component, clamped to fit if it exceeds bounds
+    FLOAT fraction = 5.0f;
     FLOAT iconScalingFactorWidth = min(((FLOAT)width / (FLOAT)img_papafile.width) / fraction, (FLOAT)height / (FLOAT)img_papafile.height);
     FLOAT iconScalingFactorHeight = min((FLOAT)width / (FLOAT)img_papafile.width, ((FLOAT)height / (FLOAT)img_papafile.height) / fraction);
     FLOAT iconScalingFactor = max(iconScalingFactorWidth, iconScalingFactorHeight);
