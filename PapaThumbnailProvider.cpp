@@ -88,6 +88,7 @@ private:
     VOID Blit(HBITMAP*, HBITMAP*, LONG, LONG);
     VOID SwapBR(HBITMAP*);
     VOID SwapTopBottom(HBITMAP*);
+    HBITMAP CreateBitmapData(BITMAPINFO*, BYTE**, LONG, LONG);
 
 };
 
@@ -557,6 +558,16 @@ HRESULT CPapaThumbProvider::RescaleImageNearestNeighbour(HBITMAP* src, HBITMAP* 
     return S_OK;
 }
 
+HBITMAP CPapaThumbProvider::CreateBitmapData(BITMAPINFO *info, BYTE **dataPtr, LONG w, LONG h)
+{
+    info->bmiHeader.biWidth = w;
+    info->bmiHeader.biHeight = h;
+    info->bmiHeader.biPlanes = 1;
+    info->bmiHeader.biBitCount = 32;
+    info->bmiHeader.biCompression = BI_RGB;
+    return CreateDIBSection(NULL, info, DIB_RGB_COLORS, reinterpret_cast<void**>(dataPtr), NULL, 0);
+}
+
 HRESULT CPapaThumbProvider::RescaleImageStepped(HBITMAP* src, HBITMAP* dst, HRESULT(CPapaThumbProvider::*scalingFunc)(HBITMAP*, HBITMAP*))
 {
     DIBSECTION srcDib;
@@ -619,10 +630,6 @@ HRESULT CPapaThumbProvider::RescaleImageStepped(HBITMAP* src, HBITMAP* dst, HRES
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
 {
-
-    if (cx < 0) { // won't buid unless i do something with cx....
-        return E_INVALIDARG;
-    }
 
     BYTE header[0x68];
 
@@ -696,16 +703,11 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     }
 
     // BGRA
+
     
     BITMAPINFO decompData = { sizeof(decompData.bmiHeader) };
-    decompData.bmiHeader.biWidth = width;
-    decompData.bmiHeader.biHeight = height;
-    decompData.bmiHeader.biPlanes = 1;
-    decompData.bmiHeader.biBitCount = 32;
-    decompData.bmiHeader.biCompression = BI_RGB;
-
-    BYTE* decompTexture;
-    HBITMAP decompBitmap = CreateDIBSection(NULL, &decompData, DIB_RGB_COLORS, reinterpret_cast<void**>(&decompTexture), NULL, 0);
+    BYTE* decompTexture = NULL;
+    HBITMAP decompBitmap = CreateBitmapData(&decompData, &decompTexture, width, height);
     DecodeTexture(data, width, height, format, decompTexture);
 
     // swap R and B
@@ -713,51 +715,45 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
 
     // scale to desired size
     USHORT smaller = min(width, height);
-    FLOAT factor = (FLOAT)cx / (FLOAT)smaller;
+    FLOAT factor = (FLOAT)cx / (FLOAT) smaller;
 
     BITMAPINFO bmi = { sizeof(bmi.bmiHeader) };
-    bmi.bmiHeader.biWidth = (LONG)roundf(width * factor);
-    bmi.bmiHeader.biHeight = (LONG)roundf(height * factor);
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    BYTE* pBits;
-    HBITMAP scaledBitmap = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
-
-    RescaleImageStepped(&decompBitmap, &scaledBitmap, &CPapaThumbProvider::RescaleImageBicubic);
-    DeleteObject(decompBitmap); // free the old bitmap
-
-
+    BYTE* pBits = NULL;
+    HBITMAP scaledBitmap;
+    if (factor > 1) { // upscale
+        bmi = { sizeof(bmi.bmiHeader) };
+        scaledBitmap = CreateBitmapData(&bmi, &pBits, (LONG)roundf(width * factor), (LONG)roundf(height * factor));
+        RescaleImageNearestNeighbour(&decompBitmap, &scaledBitmap);
+        DeleteObject(decompBitmap); // free the old bitmap
+    } else { // copy the data over
+        bmi = decompData;
+        pBits = decompTexture;
+        scaledBitmap = decompBitmap;
+    }
+    
+    
     // load the papafile file image
     BITMAPINFO papafile = { sizeof(papafile.bmiHeader) };
-    papafile.bmiHeader.biWidth = img_papafile.width;
-    papafile.bmiHeader.biHeight = img_papafile.height;
-    papafile.bmiHeader.biPlanes = 1;
-    papafile.bmiHeader.biBitCount = (WORD)(img_papafile.bytes_per_pixel * 8);
-    papafile.bmiHeader.biCompression = BI_RGB;
-    BYTE* papafileBits;
-    HBITMAP papafileBitmap = CreateDIBSection(NULL, &papafile, DIB_RGB_COLORS, reinterpret_cast<void**>(&papafileBits), NULL, 0);
-
+    BYTE* papafileBits = NULL;
+    HBITMAP papafileBitmap = CreateBitmapData(&papafile, &papafileBits, img_papafile.width, img_papafile.height);
     memcpy(papafileBits, img_papafile.pixel_data, (ULONG64)img_papafile.width * (ULONG64)img_papafile.height * (ULONG64)img_papafile.bytes_per_pixel);
     SwapBR(&papafileBitmap);
     SwapTopBottom(&papafileBitmap);
 
-    // upscale by 4x
-    BITMAPINFO papafile4 = { sizeof(papafile4.bmiHeader) };
-    papafile4.bmiHeader.biWidth = img_papafile.width * 4;
-    papafile4.bmiHeader.biHeight = img_papafile.height * 4;
-    papafile4.bmiHeader.biPlanes = 1;
-    papafile4.bmiHeader.biBitCount = (WORD)(img_papafile.bytes_per_pixel * 8);
-    papafile4.bmiHeader.biCompression = BI_RGB;
-    BYTE* papafileBits4;
-    HBITMAP papafileBitmap4 = CreateDIBSection(NULL, &papafile4, DIB_RGB_COLORS, reinterpret_cast<void**>(&papafileBits4), NULL, 0);
+    // scale so that the icon image is 1/4 of the larger component, clamped to fit if it exceeds bounds
+    FLOAT fraction = 4.0f;
+    FLOAT iconScalingFactorWidth = min(((FLOAT)width / (FLOAT)img_papafile.width) / fraction, (FLOAT)height / (FLOAT)img_papafile.height);
+    FLOAT iconScalingFactorHeight = min((FLOAT)width / (FLOAT)img_papafile.width, ((FLOAT)height / (FLOAT)img_papafile.height) / fraction);
+    FLOAT iconScalingFactor = max(iconScalingFactorWidth, iconScalingFactorHeight);
+    BITMAPINFO papafileScaled = { sizeof(papafileScaled.bmiHeader) };
+    BYTE* papafileScaledBits = NULL;
+    HBITMAP papafileScaledBitmap = CreateBitmapData(&papafileScaled, &papafileScaledBits, (LONG)roundf(img_papafile.width * iconScalingFactor), (LONG)roundf(img_papafile.height * iconScalingFactor));
 
-    RescaleImageNearestNeighbour(&papafileBitmap, &papafileBitmap4);
+    RescaleImageNearestNeighbour(&papafileBitmap, &papafileScaledBitmap);
 
     const UINT offset = 1;
     
-    Blit(&papafileBitmap4, &scaledBitmap, bmi.bmiHeader.biWidth - papafile4.bmiHeader.biWidth - offset, offset);
+    Blit(&papafileScaledBitmap, &scaledBitmap, bmi.bmiHeader.biWidth - papafileScaled.bmiHeader.biWidth - offset, offset);
 
     *phbmp = scaledBitmap;
     *pdwAlpha = WTSAT_ARGB;
