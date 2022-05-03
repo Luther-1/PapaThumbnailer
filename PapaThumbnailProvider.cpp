@@ -78,8 +78,11 @@ private:
     VOID DxtDecodeColourMap(BYTE*, UINT, BYTE[4][3]);
     VOID DxtDecodeAlphaMap(BYTE*, UINT, BYTE[16]);
     VOID DecodeTexture(BYTE*, USHORT, USHORT, BYTE, BYTE*);
+    inline BYTE PixelOrZero(BYTE*, LONG, LONG, LONG, LONG, LONG);
     HRESULT RescaleImageBilinear(HBITMAP*, HBITMAP*);
+    HRESULT RescaleImageBicubic(HBITMAP*, HBITMAP*);
     HRESULT RescaleImageNearestNeighbour(HBITMAP*, HBITMAP*);
+    HRESULT RescaleImageStepped(HBITMAP*, HBITMAP*, HRESULT(CPapaThumbProvider::*scalingFunc)(HBITMAP*, HBITMAP*));
     FLOAT Lerp(FLOAT s, FLOAT e, FLOAT t);
     FLOAT Blerp(FLOAT c00, FLOAT c10, FLOAT c01, FLOAT c11, FLOAT tx, FLOAT ty);
     VOID Blit(HBITMAP*, HBITMAP*, LONG, LONG);
@@ -308,6 +311,14 @@ VOID CPapaThumbProvider::DecodeTexture(BYTE* data, USHORT width, USHORT height, 
     }
 }
 
+inline BYTE CPapaThumbProvider::PixelOrZero(BYTE* pixels, LONG width, LONG height, LONG x, LONG y, LONG channel) {
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+        return 0;
+    }
+
+    return pixels[(x + y * width) * 4 + channel];
+}
+
 // source:
 // https://rosettacode.org/wiki/Bilinear_interpolation#C
 
@@ -339,8 +350,8 @@ HRESULT CPapaThumbProvider::RescaleImageBilinear(HBITMAP* src, HBITMAP* dst) {
 
     for (LONG y = 0; y < dstHeight; y++) {
         for (LONG x = 0; x < dstWidth; x++) {
-            FLOAT gx = x / (FLOAT)(dstWidth) * (srcWidth - 0.5f);
-            FLOAT gy = y / (FLOAT)(dstHeight) * (srcHeight - 0.5f);
+            FLOAT gx = x / (FLOAT)(dstWidth) * (srcWidth -0.5f);
+            FLOAT gy = y / (FLOAT)(dstHeight) * (srcHeight -0.5f);
             LONG gxi = (LONG)gx;
             LONG gyi = (LONG)gy;
 
@@ -355,6 +366,74 @@ HRESULT CPapaThumbProvider::RescaleImageBilinear(HBITMAP* src, HBITMAP* dst) {
                                             (FLOAT)(gx - gxi), (FLOAT)(gy - gyi)) << (8 * i);
             }
             dstPixelsInt[x + y * dstWidth] = result;
+        }
+    }
+    return S_OK;
+}
+
+#define CLAMP_BYTE(b) (b >= 255 ? 255 : b <= 0 ? 0 : (BYTE)b);
+
+// https://stackoverflow.com/q/15176972
+HRESULT CPapaThumbProvider::RescaleImageBicubic(HBITMAP* src, HBITMAP* dst) {
+
+    DIBSECTION srcDib;
+    GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
+    BYTE* srcPixels = (BYTE*)srcDib.dsBm.bmBits;
+    LONG srcWidth = srcDib.dsBmih.biWidth;
+    LONG srcHeight = srcDib.dsBmih.biHeight;
+
+    DIBSECTION dstDib;
+    GetObject(*dst, sizeof(dstDib), (LPVOID)&dstDib);
+    BYTE* dstPixels = (BYTE*)dstDib.dsBm.bmBits;
+    LONG dstWidth = dstDib.dsBmih.biWidth;
+    LONG dstHeight = dstDib.dsBmih.biHeight;
+
+    FLOAT xRatio = (FLOAT)srcWidth / dstWidth;
+    FLOAT yRatio = (FLOAT)srcHeight / dstHeight;
+
+    FLOAT temp[4] = { 0 };
+
+
+    for (LONG y = 0; y < dstHeight; y++) {
+        for (LONG x = 0; x < dstWidth; x++) {
+            LONG xx = (LONG)(xRatio * x);
+            LONG yy = (LONG)(yRatio * y);
+            FLOAT dx = xRatio * x - xx;
+            FLOAT dx2 = dx * dx;
+            FLOAT dx3 = dx2 * dx;
+            FLOAT dy = yRatio * y - yy;
+            FLOAT dy2 = dy * dy;
+            FLOAT dy3 = dy2 * dy;
+            
+
+            for (LONG channel = 0; channel < 4; channel++) {
+                FLOAT a0, a1, a2, a3, d1, d2, d3;
+                for (LONG i = 0; i < 4; i++) {
+                    LONG idx = yy - 1 + i;
+                    a0 = PixelOrZero(srcPixels, srcWidth, srcHeight, xx, idx, channel);
+
+                    d1 = PixelOrZero(srcPixels, srcWidth, srcHeight, xx - 1, idx, channel) - a0;
+                    d2 = PixelOrZero(srcPixels, srcWidth, srcHeight, xx + 1, idx, channel) - a0;
+                    d3 = PixelOrZero(srcPixels, srcWidth, srcHeight, xx + 2, idx, channel) - a0;
+
+                    a1 = (FLOAT)(-(1.0f / 3.0f) * d1 + d2 - (1.0f / 6.0f) * d3);
+                    a2 = (FLOAT)(0.5f * d1 + 0.5f * d2);
+                    a3 = (FLOAT)(-(1.0f / 6.0f) * d1 - 0.5f * d2 + (1.0f / 6.0f) * d3);
+
+                    temp[i] = (FLOAT)(a0 + a1 * dx + a2 * dx2 + a3 * dx3);
+                }
+                a0 = temp[1];
+                d1 = temp[0] - a0;
+                d2 = temp[2] - a0;
+                d3 = temp[3] - a0;
+                
+                a1 = (FLOAT)(-(1.0f / 3.0f) * d1 + d2 - (1.0f / 6.0f) * d3);
+                a2 = (FLOAT)(0.5f * d1 + 0.5f * d2);
+                a3 = (FLOAT)(-(1.0f / 6.0f) * d1 - 0.5f * d2 + (1.0f / 6.0f) * d3);
+
+                FLOAT res = (a0 + a1 * dy + a2 * dy2 + a3 * dy3);
+                dstPixels[(x + y * dstWidth) * 4 + channel] = CLAMP_BYTE(res);
+            }
         }
     }
     return S_OK;
@@ -478,6 +557,65 @@ HRESULT CPapaThumbProvider::RescaleImageNearestNeighbour(HBITMAP* src, HBITMAP* 
     return S_OK;
 }
 
+HRESULT CPapaThumbProvider::RescaleImageStepped(HBITMAP* src, HBITMAP* dst, HRESULT(CPapaThumbProvider::*scalingFunc)(HBITMAP*, HBITMAP*))
+{
+    DIBSECTION srcDib;
+    GetObject(*src, sizeof(srcDib), (LPVOID)&srcDib);
+    LONG srcWidth = srcDib.dsBmih.biWidth;
+    LONG srcHeight = srcDib.dsBmih.biHeight;
+
+    DIBSECTION dstDib;
+    GetObject(*dst, sizeof(dstDib), (LPVOID)&dstDib);
+    LONG dstWidth = dstDib.dsBmih.biWidth;
+    LONG dstHeight = dstDib.dsBmih.biHeight;
+
+    LONG cw = srcWidth;
+    LONG ch = srcHeight;
+    BOOL downscaleWidth = srcWidth > dstWidth;
+    BOOL downscaleHeight = srcHeight > dstHeight;
+
+    if (!downscaleWidth && !downscaleHeight) {
+        return (this->*scalingFunc)(src, dst);
+    }
+
+    if (cw == dstWidth && ch == dstHeight) {
+        Blit(src, dst, 0, 0); // copy to dst
+    }
+    
+    HBITMAP *sourceBitmap = src, *destBitmap;
+
+
+    if (downscaleWidth) {
+        cw = max(dstWidth, (LONG)(cw / 2));
+    } else {
+        cw = dstWidth;
+    }
+
+    if (downscaleHeight) {
+        ch = max(dstHeight, (LONG)(ch / 2));
+    } else {
+        ch = dstHeight;
+    }
+
+    BITMAPINFO info = { sizeof(info.bmiHeader) };
+    info.bmiHeader.biWidth = cw;
+    info.bmiHeader.biHeight = ch;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    BYTE* tempBits;
+    HBITMAP dib = CreateDIBSection(NULL, &info, DIB_RGB_COLORS, reinterpret_cast<void**>(&tempBits), NULL, 0);
+    destBitmap = &dib;
+
+    (this->*scalingFunc)(sourceBitmap, destBitmap);
+    HRESULT res = RescaleImageStepped(destBitmap, dst, scalingFunc); // non recursive caused weird issues, so this is an easy solution
+
+    DeleteObject(destBitmap);
+
+    return res;
+    
+}
+
 // IThumbnailProvider
 IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALPHATYPE *pdwAlpha)
 {
@@ -587,7 +725,7 @@ IFACEMETHODIMP CPapaThumbProvider::GetThumbnail(UINT cx, HBITMAP *phbmp, WTS_ALP
     BYTE* pBits;
     HBITMAP scaledBitmap = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pBits), NULL, 0);
 
-    RescaleImageBilinear(&decompBitmap, &scaledBitmap);
+    RescaleImageStepped(&decompBitmap, &scaledBitmap, &CPapaThumbProvider::RescaleImageBicubic);
     DeleteObject(decompBitmap); // free the old bitmap
 
 
